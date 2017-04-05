@@ -13,7 +13,7 @@ from vod_metadata import VodPackage
 def read_config(config_file='config.py'):
     # TODO: check availability of all needed settings
     config = {}
-    execfile(config_file, config)
+    execfile(os.path.join(sys.path[0], config_file), config)
     return config
 
 
@@ -59,10 +59,11 @@ if __name__ == "__main__":
         outputs = config['sd_outputs']
 
     for output in outputs:
-        destination = '%s%s_%s.%s' % (
+        destination = '%s%s_%s_%s.%s' % (
             config['destination'],
             os.path.splitext(file_name)[0],
             output['size'],
+            output['bitrate'],
             output['output']
         )
         output.update({'destination': destination})
