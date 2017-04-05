@@ -1,0 +1,8 @@
+[[source]]
+url = "https://pypi.python.org/simple"
+verify_ssl = true
+
+[packages]
+requests = "*"
+python-magic = "*"
+vod_metadata = "*"
