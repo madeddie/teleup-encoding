@@ -6,3 +6,6 @@ verify_ssl = true
 requests = "*"
 python-magic = "*"
 vod_metadata = "*"
+
+[dev-packages]
+ipython = "*"

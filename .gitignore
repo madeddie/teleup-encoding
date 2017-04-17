@@ -99,3 +99,4 @@ ENV/
 # local data
 /data
 config.py
+request.json
