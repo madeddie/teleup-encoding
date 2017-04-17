@@ -137,6 +137,27 @@ def output_job_definition(file_name, hd_content, action='AddMedia',
     return job_spec
 
 
+def send_job(job_def):
+    # Send job to encoding API to be processed
+    api_endpoint = config['encoding_url']
+
+    payload = {'json': json.dumps({'query': job_def})}
+    resp = requests.post(api_endpoint, data=payload)
+    resp_json = json.dumps(resp.json(), indent=4)
+
+    # TODO: print nothing except when asked for debugging
+    if resp.ok:
+        if 'errors' in resp_json['response']:
+            print('API gives an error:\n%s' % (resp_json))
+            return False
+        else:
+            print(resp_json)
+            return True
+    else:
+        print('An unknown problem occurred:\n%s' % (resp.text))
+        return False
+
+
 if __name__ == "__main__":
     config = read_config()
 
@@ -149,6 +170,7 @@ if __name__ == "__main__":
 
     # TODO: maybe call this `api` instead of `auto`
     # TODO: run this code when files have been added on the commandline
+    # TODO: maybe use basename on filenames
     if not args.auto:
         for input_file in args.files:
             if os.path.isfile(input_file):
@@ -165,8 +187,16 @@ if __name__ == "__main__":
                 print('File does not exist (locally), this might fail...')
                 file_name = input_file
 
-            api_query = output_job_definition(input_file, hd_content)
-            print(json.dumps({'query': api_query}, indent=4, sort_keys=True))
+            job_def = output_job_definition(file_name, hd_content)
+
+            print(json.dumps({'query': job_def}, indent=4, sort_keys=True))
+
+            answer = raw_input('Want to continue? (n) ')
+            if answer not in ('y', 'Y'):
+                print('skipping...')
+                continue
+
+            send_job(job_def)
 
     else:
         assets = retrieve_vod_list(status=None, limit=3, paging=False)
@@ -174,23 +204,13 @@ if __name__ == "__main__":
         for asset in assets:
             file_name = asset['movie_file']
             hd_content = asset['movie_hd']
-            api_query = output_job_definition(file_name, hd_content)
+            job_def = output_job_definition(file_name, hd_content)
 
-            print(json.dumps({'query': api_query}, indent=4, sort_keys=True))
+            print(json.dumps({'query': job_def}, indent=4, sort_keys=True))
 
             answer = raw_input('Want to continue? (n) ')
             if answer not in ('y', 'Y'):
                 print('skipping...')
                 continue
 
-            payload = {'json': json.dumps({'query': api_query})}
-            res = requests.post(config['encoding_url'], data=payload)
-            res_json = json.dumps(res.json(), indent=4)
-
-            if res.ok:
-                if 'errors' in res.json()['response']:
-                    print('API gives an error:\n%s' % (res_json))
-                else:
-                    print(res_json)
-            else:
-                print('An unknown problem occurred:\n%s' % (res.text))
+            send_job(job_def)
