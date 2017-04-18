@@ -147,7 +147,7 @@ def send_job(job_def):
 
     # TODO: print nothing except when asked for debugging
     if resp.ok:
-        if 'errors' in resp_json['response']:
+        if 'errors' in resp.json()['response']:
             print('API gives an error:\n%s' % (resp_json))
             return False
         else:
