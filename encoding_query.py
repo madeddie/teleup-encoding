@@ -1,13 +1,15 @@
 #!/usr/bin/env python
 
+import argparse
+import json
 import os
 import sys
-import argparse
-import requests
-import json
-import magic
+try:
+    from urlparse import urljoin
+except ImportError:
+    from urllib.parse import urljoin
 
-from urlparse import urljoin
+import requests
 from vod_metadata import VodPackage
 
 # TeleUP status constants
@@ -28,11 +30,11 @@ def read_config(config_file=None):
     """Return config dict with values from config file"""
     config = {}
     if config_file:
-        execfile(config_file, config)
+        exec(open(config_file).read(), config)
     else:
-        execfile(os.path.join(sys.path[0], 'config.py'), config)
+        exec(open(os.path.join(sys.path[0], 'config.py')).read(), config)
 
-    mandatory_keys = [
+    mandatory = [
         'teleup_url',
         'teleup_secret',
         'encoding_url',
@@ -40,15 +42,13 @@ def read_config(config_file=None):
         'encoding_secret',
         'source',
         'destination',
-        'notify',
         'sizes',
         'bitrates'
     ]
 
-    missing_keys = set(mandatory_keys).difference(config.keys())
-    if missing_keys:
-        print('Missing these settings in config file:\n%s' %
-              '\n'.join(missing_keys))
+    missing = set(mandatory).difference(list(config.keys()))
+    if missing:
+        print('Missing settings in config:\n{}'.format('\n'.join(missing)))
         sys.exit()
 
     return config
@@ -60,13 +60,8 @@ def parse_args(argv=None):
     Parsed from commandline options and arguments
     """
     parser = argparse.ArgumentParser()
-    parser.add_argument('-a', '--auto', action='store_true',
-                        help='Run non-interactively')
     parser.add_argument('--update_status', action='store_true',
                         help='Only update status of running jobs')
-    parser.add_argument('--hd', action='store_true',
-                        help='Treat asset as HD content if unknown')
-    parser.add_argument('files', nargs='*', help='Filenames to be encoded')
 
     return parser.parse_args(argv)
 
@@ -92,7 +87,7 @@ def get_vod_list(status=VOD_TODO, paging=True, limit=100):
     if paging:
         while 'next' in resp_json.get('paging', {}):
             resp = sess.get(
-                urljoin(api_endpoint, resp_json['paging']['next']),
+                urlparse.urljoin(api_endpoint, resp_json['paging']['next']),
                 auth=api_auth
             )
             resp_json = resp.json()
@@ -116,7 +111,6 @@ def update_vod_status(vod_id, status, encode_job_id=None, msg=None):
     if msg:
         query['observation'] = msg
 
-    payload = json.dumps([query])
     # TODO: test for success
     resp = requests.patch(api_endpoint, json=[query], auth=api_auth)
 
@@ -131,9 +125,11 @@ def job_definition(file_name, hd_content, action='AddMedia',
     """
     job_spec = {
         'userid': config['encoding_user'],
-        'userkey': config['encoding_secret'],
-        'notify': config['notify']
+        'userkey': config['encoding_secret']
     }
+
+    if config.get('notify'):
+        job_spec['notify'] = config['notify']
 
     job_spec['action'] = action
     job_spec['source'] = '%s/%s' % (config['source'], file_name)
@@ -200,10 +196,10 @@ def get_job_status(job_id):
     payload = {'json': json.dumps({'query': query})}
     # TODO: check success
     resp = requests.post(api_endpoint, data=payload)
+    data = resp.json()['response']
 
     return_vals = ('id', 'created', 'started', 'progress', 'status')
-    data = resp.json()['response']
-    return {k: data.get(k, None) for k in return_vals}
+    return {x: data.get(x) for x in return_vals}
 
 
 def send_job(job_def):
@@ -234,102 +230,68 @@ if __name__ == "__main__":
 
     args = parse_args()
 
-    if args.hd:
-        hd_content = True
-    else:
-        hd_content = False
+    """
+    Step 1: retrieve vod_list of running job assets
+    Step 2: check encoding status of all jobs
+    Step 3: update vod asset encoding status
+    Step 4: retrieve vod_list of to_encode assets
+    Step 5: create and send jobs to encoding.com
+    Step 6: update vod status encoding status
 
-    # TODO: maybe call this `api` instead of `auto`
-    # TODO: run this code when files have been added on the commandline
-    # TODO: maybe use basename on filenames
-    # NOTE: do we actually want to run this on individual files?
-    if not args.auto:
-        for input_file in args.files:
-            if os.path.isfile(input_file):
-                if 'xml' in magic.from_file(input_file).lower():
-                    vod_package = VodPackage(input_file)
-                    file_name = vod_package.D_content['movie']
-                    hd_content = vod_package.D_app['movie']['HDContent'] == 'Y'
-                elif 'mpeg' in magic.from_file(input_file).lower():
-                    file_name = input_file
-                else:
-                    print('Not xml nor mpeg data, this might fail...')
-                    file_name = input_file
-            else:
-                print('File does not exist (locally), this might fail...')
-                file_name = input_file
+    """
 
-            job_def = job_definition(file_name, hd_content)
+    # Step 1, 2 and 3
+    active_assets = get_vod_list(status=VOD_ACTIVE)
+    for asset in active_assets:
+        if not asset.get('encode_job_id'):
+            # TODO: log error
+            print('No encode_job_id, cannot check job status')
+            continue
 
-            print(json.dumps({'query': job_def}, indent=4, sort_keys=True))
+        status = get_job_status(asset.get('encode_job_id'))
 
+        if status['status'] in JOB_ACTIVE:
+            observation = '%s %s%%' % (status['status'],
+                                       status['progress'])
+            update_vod_status(asset['id'], VOD_ACTIVE, msg=observation)
+            if args.update_status:
+                print('%s: %s' % (asset['id'], observation))
+        elif status['status'] in JOB_SUCCESS:
+            update_vod_status(asset['id'], VOD_SUCCESS, msg='-')
+            if args.update_status:
+                print('%s: %s' % (asset['id'], 'done'))
+        elif status['status'] in JOB_FAIL:
+            update_vod_status(asset['id'], VOD_FAIL, msg=status['status'])
+            if args.update_status:
+                print('%s: %s' % (asset['id'], 'failed'))
+        else:
+            print('Encoding status %s unknown' % (status['status']))
+
+    if args.update_status:
+        print('Only checking status, skipping adding new jobs')
+        sys.exit()
+
+    # Step 4, 5 and 6
+    to_encode_assets = get_vod_list(status=VOD_TODO)
+    for asset in to_encode_assets:
+        file_name = asset['movie_file']
+        hd_content = asset.get('movie_hd', False)
+        job_def = job_definition(file_name, hd_content)
+
+        # TODO: save this for debug
+        print(json.dumps({'query': job_def}, indent=4, sort_keys=True))
+
+        try:
             answer = raw_input('Want to continue? (n) ')
-            if answer not in ('y', 'Y'):
-                print('skipping...')
-                continue
+        except NameError:
+            answer = input('Want to continue? (n) ')
+        if answer not in ('y', 'Y'):
+            print('skipping...')
+            continue
 
-            send_job(job_def)
+        job_id = send_job(job_def)
 
-    else:
-        """
-        Step 1: retrieve vod_list of running job assets
-        Step 2: check encoding status of all jobs
-        Step 3: update vod asset encoding status
-        Step 4: retrieve vod_list of to_encode assets
-        Step 5: create and send jobs to encoding.com
-        Step 6: update vod status encoding status
-
-        """
-
-        # Step 1, 2 and 3
-        active_assets = get_vod_list(status=VOD_ACTIVE)
-        for asset in active_assets:
-            if not asset.get('encode_job_id'):
-                # TODO: log error
-                print('No encode_job_id, cannot check job status')
-                continue
-
-            status = get_job_status(asset.get('encode_job_id'))
-
-            if status['status'] in JOB_ACTIVE:
-                observation = '%s %s%%' % (status['status'],
-                                           status['progress'])
-                update_vod_status(asset['id'], VOD_ACTIVE, msg=observation)
-                if args.update_status:
-                    print('%s: %s' % (asset['id'], observation))
-            elif status['status'] in JOB_SUCCESS:
-                update_vod_status(asset['id'], VOD_SUCCESS, msg='-')
-                if args.update_status:
-                    print('%s: %s' % (asset['id'], 'done'))
-            elif status['status'] in JOB_FAIL:
-                update_vod_status(asset['id'], VOD_FAIL, msg=status['status'])
-                if args.update_status:
-                    print('%s: %s' % (asset['id'], 'failed'))
-            else:
-                print('Encoding status %s unknown' % (status['status']))
-
-        if args.update_status:
-            print('Only checking status, skipping adding new jobs')
-            sys.exit()
-
-        # Step 4, 5 and 6
-        to_encode_assets = get_vod_list(status=VOD_TODO)
-        for asset in to_encode_assets:
-            file_name = asset['movie_file']
-            hd_content = asset['movie_hd']
-            job_def = job_definition(file_name, hd_content)
-
-            # TODO: save this for debug
-            print(json.dumps({'query': job_def}, indent=4, sort_keys=True))
-
-            answer = raw_input('Want to continue? (n) ')
-            if answer not in ('y', 'Y'):
-                print('skipping...')
-                continue
-
-            job_id = send_job(job_def)
-
-            if job_id:
-                update_vod_status(asset['id'], VOD_ACTIVE, job_id)
-            else:
-                print('Failure encoding asset %s' % (asset['id']))
+        if job_id:
+            update_vod_status(asset['id'], VOD_ACTIVE, job_id)
+        else:
+            print('Failure encoding asset %s' % (asset['id']))

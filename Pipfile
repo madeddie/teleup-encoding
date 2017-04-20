@@ -4,5 +4,4 @@ verify_ssl = true
 
 [packages]
 requests = "*"
-python-magic = "*"
 vod_metadata = "*"
