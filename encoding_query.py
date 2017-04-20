@@ -70,7 +70,7 @@ def get_vod_list(status=VOD_TODO, paging=True, limit=100):
     """Return list of assets from TeleUP api vod endpoint"""
     api_endpoint = config['teleup_url']
     api_auth = (config['teleup_secret'], '')
-    url = '%s?status=%s&limit=%s' % (api_endpoint, status, limit)
+    url = '{}?status={}&limit={}'.format(api_endpoint, status, limit)
 
     sess = requests.Session()
     resp = sess.get(url, auth=(config['teleup_secret'], ''))
@@ -117,8 +117,7 @@ def update_vod_status(vod_id, status, encode_job_id=None, msg=None):
     return resp.ok
 
 
-def job_definition(file_name, hd_content, action='AddMedia',
-                   output='wowza_multibitrate_mp4',):
+def job_definition(file_name, hd_content, action='AddMedia'):
     """Return encoding job dict
 
     To be converted to json before sending to API
@@ -132,47 +131,24 @@ def job_definition(file_name, hd_content, action='AddMedia',
         job_spec['notify'] = config['notify']
 
     job_spec['action'] = action
-    job_spec['source'] = '%s/%s' % (config['source'], file_name)
+    job_spec['source'] = '{}/{}'.format(config['source'], file_name)
 
-    if output == 'wowza_multibitrate_mp4':
-        job_format = {}
-        job_format['output'] = output
+    job_format = {}
+    job_format['output'] = 'wowza_multibitrate_mp4'
 
-        if hd_content:
-            job_format['bitrates'] = config['bitrates']['hd']
-            job_format['sizes'] = config['sizes']['hd']
-        else:
-            job_format['bitrates'] = config['bitrates']['sd']
-            job_format['sizes'] = config['sizes']['sd']
+    if hd_content:
+        job_format['bitrates'] = config['bitrates']['hd']
+        job_format['sizes'] = config['sizes']['hd']
+    else:
+        job_format['bitrates'] = config['bitrates']['sd']
+        job_format['sizes'] = config['sizes']['sd']
 
-        job_format['destination'] = '%s/%s.smil' % (
-            config['destination'],
-            os.path.splitext(file_name)[0]
-        )
+    job_format['destination'] = '{}/{}.smil'.format(
+        config['destination'],
+        os.path.splitext(file_name)[0]
+    )
 
-        job_spec['format'] = job_format
-
-    elif output == 'simple':
-        # separate files, probably replaced with wowza_multibitrate
-        job_formats = []
-
-        if hd_content:
-            outputs = config['hd_outputs']
-        else:
-            outputs = config['sd_outputs']
-
-        for output in outputs:
-            destination = '%s%s_%s_%s.%s' % (
-                config['destination'],
-                os.path.splitext(file_name)[0],
-                output['size'],
-                output['bitrate'],
-                output['output']
-            )
-            output.update({'destination': destination})
-            job_formats.append(output)
-
-        job_spec['format'] = job_formats
+    job_spec['format'] = job_format
 
     return job_spec
 
@@ -215,13 +191,13 @@ def send_job(job_def):
     # TODO: log errors
     if resp.ok:
         if 'errors' in resp_json['response']:
-            print('API returned an error:\n%s' % (resp_json))
+            print('API returned an error:\n{}'.format(resp_json))
             return False
         else:
             print(resp_json)
             return resp_json['response']['MediaID']
     else:
-        print('An unknown problem occurred:\n%s' % (resp.text))
+        print('An unknown problem occurred:\n{}'.format(resp.text))
         return False
 
 
@@ -230,17 +206,7 @@ if __name__ == "__main__":
 
     args = parse_args()
 
-    """
-    Step 1: retrieve vod_list of running job assets
-    Step 2: check encoding status of all jobs
-    Step 3: update vod asset encoding status
-    Step 4: retrieve vod_list of to_encode assets
-    Step 5: create and send jobs to encoding.com
-    Step 6: update vod status encoding status
-
-    """
-
-    # Step 1, 2 and 3
+    # Check active jobs and update vod status
     active_assets = get_vod_list(status=VOD_ACTIVE)
     for asset in active_assets:
         if not asset.get('encode_job_id'):
@@ -251,27 +217,26 @@ if __name__ == "__main__":
         status = get_job_status(asset.get('encode_job_id'))
 
         if status['status'] in JOB_ACTIVE:
-            observation = '%s %s%%' % (status['status'],
-                                       status['progress'])
+            observation = '{} {}%'.format(status['status'], status['progress'])
             update_vod_status(asset['id'], VOD_ACTIVE, msg=observation)
             if args.update_status:
-                print('%s: %s' % (asset['id'], observation))
+                print('{}: {}'.format(asset['id'], observation))
         elif status['status'] in JOB_SUCCESS:
             update_vod_status(asset['id'], VOD_SUCCESS, msg='-')
             if args.update_status:
-                print('%s: %s' % (asset['id'], 'done'))
+                print('{}: {}'.format(asset['id'], 'done'))
         elif status['status'] in JOB_FAIL:
             update_vod_status(asset['id'], VOD_FAIL, msg=status['status'])
             if args.update_status:
-                print('%s: %s' % (asset['id'], 'failed'))
+                print('{}: {}'.format(asset['id'], 'failed'))
         else:
-            print('Encoding status %s unknown' % (status['status']))
+            print('Encoding status {} unknown'.format(status['status']))
 
     if args.update_status:
         print('Only checking status, skipping adding new jobs')
         sys.exit()
 
-    # Step 4, 5 and 6
+    # Run encoding jobs for selected vod assets
     to_encode_assets = get_vod_list(status=VOD_TODO)
     for asset in to_encode_assets:
         file_name = asset['movie_file']
@@ -294,4 +259,4 @@ if __name__ == "__main__":
         if job_id:
             update_vod_status(asset['id'], VOD_ACTIVE, job_id)
         else:
-            print('Failure encoding asset %s' % (asset['id']))
+            print('Failure encoding asset {}'.format(asset['id']))
