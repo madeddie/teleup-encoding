@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import logging
 import os
 import sys
 try:
@@ -29,10 +30,13 @@ JOB_FAIL = ('Error')
 def read_config(config_file=None):
     """Return config dict with values from config file"""
     config = {}
-    if config_file:
+    if not config_file:
+        config_file = os.path.join(sys.path[0], 'config.py')
+    try:
         exec(open(config_file).read(), config)
-    else:
-        exec(open(os.path.join(sys.path[0], 'config.py')).read(), config)
+    except IOError:
+        logging.error("Can't find file {}, exiting".format(config_file))
+        sys.exit()
 
     mandatory = [
         'teleup_url',
@@ -48,7 +52,7 @@ def read_config(config_file=None):
 
     missing = set(mandatory).difference(list(config.keys()))
     if missing:
-        print('Missing settings in config:\n{}'.format('\n'.join(missing)))
+        logging.error('Missing config setting(s) {}'.format(','.join(missing)))
         sys.exit()
 
     return config
@@ -62,6 +66,12 @@ def parse_args(argv=None):
     parser = argparse.ArgumentParser()
     parser.add_argument('--update_status', action='store_true',
                         help='Only update status of running jobs')
+    parser.add_argument('--dry_run', action='store_true',
+                        help="Dry run; don't make any actual changes")
+    parser.add_argument('--loglevel', default='WARNING',
+                        choices=['DEBUG', 'INFO', 'WARNING',
+                                 'ERROR', 'CRITICAL'],
+                        help='Set log level')
 
     return parser.parse_args(argv)
 
@@ -75,9 +85,9 @@ def get_vod_list(status=VOD_TODO, paging=True, limit=100):
     sess = requests.Session()
     resp = sess.get(url, auth=(config['teleup_secret'], ''))
     if not resp.ok:
-        # TODO: print nothing except when asked for debugging
-        # TODO: log errors
-        print('Something went wrong with the TeleUP API: ' + resp.text)
+        logging.warning(
+            'Something went wrong with the TeleUP API: {}'.format(resp.text)
+        )
         return False
 
     resp_json = resp.json()
@@ -111,8 +121,9 @@ def update_vod_status(vod_id, status, encode_job_id=None, msg=None):
     if msg:
         query['observation'] = msg
 
-    # TODO: test for success
     resp = requests.patch(api_endpoint, json=[query], auth=api_auth)
+    if not resp.ok:
+        logging.warning('Updating vod status failed (id: {})'.format(vod_id))
 
     return resp.ok
 
@@ -170,8 +181,14 @@ def get_job_status(job_id):
     }
 
     payload = {'json': json.dumps({'query': query})}
-    # TODO: check success
     resp = requests.post(api_endpoint, data=payload)
+
+    if not resp.ok:
+        logging.warning(
+            'Retrieving encoding job status failed (id: {})'.format(job_id)
+        )
+        return False
+
     data = resp.json()['response']
 
     return_vals = ('id', 'created', 'started', 'progress', 'status')
@@ -183,21 +200,23 @@ def send_job(job_def):
     api_endpoint = config['encoding_url']
 
     payload = {'json': json.dumps({'query': job_def})}
-    # TODO check success
     resp = requests.post(api_endpoint, data=payload)
+    if not resp.ok:
+        logging.warning(
+            'Failed sending encoding job (src: {})'.format(job_def['source'])
+        )
+        return False
     resp_json = resp.json()
 
-    # TODO: print nothing except when asked for debugging
-    # TODO: log errors
     if resp.ok:
         if 'errors' in resp_json['response']:
-            print('API returned an error:\n{}'.format(resp_json))
+            logging.warning('API returned an error:\n{}'.format(resp_json))
             return False
         else:
-            print(resp_json)
+            logging.info(resp_json)
             return resp_json['response']['MediaID']
     else:
-        print('An unknown problem occurred:\n{}'.format(resp.text))
+        logging.warning('An unknown problem occurred:\n{}'.format(resp.text))
         return False
 
 
@@ -206,57 +225,61 @@ if __name__ == "__main__":
 
     args = parse_args()
 
+    loglevel = getattr(logging, args.loglevel)
+    if args.dry_run:
+        print('Not making any actual changes, setting loglevel to DEBUG')
+        loglevel = getattr(logging, 'DEBUG')
+
+    logging.basicConfig(level=loglevel)
+
     # Check active jobs and update vod status
     active_assets = get_vod_list(status=VOD_ACTIVE)
+    if not active_assets:
+        logging.info('No active jobs')
     for asset in active_assets:
         if not asset.get('encode_job_id'):
-            # TODO: log error
-            print('No encode_job_id, cannot check job status')
+            logging.warning('No encode_job_id, cannot check job status')
             continue
 
         status = get_job_status(asset.get('encode_job_id'))
 
         if status['status'] in JOB_ACTIVE:
             observation = '{} {}%'.format(status['status'], status['progress'])
-            update_vod_status(asset['id'], VOD_ACTIVE, msg=observation)
-            if args.update_status:
-                print('{}: {}'.format(asset['id'], observation))
+            if not args.dry_run:
+                update_vod_status(asset['id'], VOD_ACTIVE, msg=observation)
+            logging.info('{}: {}'.format(asset['id'], observation))
         elif status['status'] in JOB_SUCCESS:
-            update_vod_status(asset['id'], VOD_SUCCESS, msg='-')
-            if args.update_status:
-                print('{}: {}'.format(asset['id'], 'done'))
+            if not args.dry_run:
+                update_vod_status(asset['id'], VOD_SUCCESS, msg='-')
+            logging.info('{}: {}'.format(asset['id'], 'done'))
         elif status['status'] in JOB_FAIL:
-            update_vod_status(asset['id'], VOD_FAIL, msg=status['status'])
-            if args.update_status:
-                print('{}: {}'.format(asset['id'], 'failed'))
+            if not args.dry_run:
+                update_vod_status(asset['id'], VOD_FAIL, msg=status['status'])
+            logging.info('{}: {}'.format(asset['id'], 'failed'))
         else:
-            print('Encoding status {} unknown'.format(status['status']))
+            logging.info('Encoding status {} unknown'.format(status['status']))
 
     if args.update_status:
-        print('Only checking status, skipping adding new jobs')
+        print('Only updating active status, skipping adding new jobs')
         sys.exit()
 
     # Run encoding jobs for selected vod assets
     to_encode_assets = get_vod_list(status=VOD_TODO)
+    if not to_encode_assets:
+        logging.info('No new assets to encode')
     for asset in to_encode_assets:
         file_name = asset['movie_file']
         hd_content = asset.get('movie_hd', False)
         job_def = job_definition(file_name, hd_content)
 
-        # TODO: save this for debug
-        print(json.dumps({'query': job_def}, indent=4, sort_keys=True))
+        logging.info(json.dumps({'query': job_def}, indent=4, sort_keys=True))
 
-        try:
-            answer = raw_input('Want to continue? (n) ')
-        except NameError:
-            answer = input('Want to continue? (n) ')
-        if answer not in ('y', 'Y'):
-            print('skipping...')
-            continue
+        if not args.dry_run:
+            job_id = send_job(job_def)
 
-        job_id = send_job(job_def)
-
-        if job_id:
-            update_vod_status(asset['id'], VOD_ACTIVE, job_id)
-        else:
-            print('Failure encoding asset {}'.format(asset['id']))
+            if job_id:
+                update_vod_status(asset['id'], VOD_ACTIVE, job_id)
+            else:
+                logging.warning(
+                    'Failure encoding asset (id: {})'.format(asset['id'])
+                )
