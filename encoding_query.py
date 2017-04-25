@@ -191,7 +191,8 @@ def get_job_status(job_id):
 
     data = resp.json()['response']
 
-    return_vals = ('id', 'created', 'started', 'progress', 'status')
+    return_vals = ('id', 'created', 'started', 'progress', 'status',
+                   'description')
     return {x: data.get(x) for x in return_vals}
 
 
@@ -245,19 +246,26 @@ if __name__ == "__main__":
 
         if status['status'] in JOB_ACTIVE:
             observation = '{} {}%'.format(status['status'], status['progress'])
-            if not args.dry_run:
-                update_vod_status(asset['id'], VOD_ACTIVE, msg=observation)
+            vod_status = VOD_ACTIVE
             logging.info('{}: {}'.format(asset['id'], observation))
         elif status['status'] in JOB_SUCCESS:
-            if not args.dry_run:
-                update_vod_status(asset['id'], VOD_SUCCESS, msg='-')
+            observation = '-'
+            vod_status = VOD_SUCCESS
             logging.info('{}: {}'.format(asset['id'], 'done'))
         elif status['status'] in JOB_FAIL:
-            if not args.dry_run:
-                update_vod_status(asset['id'], VOD_FAIL, msg=status['status'])
+            if status.get('description'):
+                observation = status['description']
+            else:
+                observation = status['status']
+            vod_status = VOD_FAIL
             logging.info('{}: {}'.format(asset['id'], 'failed'))
         else:
-            logging.info('Encoding status {} unknown'.format(status['status']))
+            observation = 'Encoding status {} unknown'.format(status['status'])
+            vod_status = VOD_FAIL
+            logging.info('{}: {}'.format(asset['id'], observation))
+
+        if not args.dry_run:
+            update_vod_status(asset['id'], vod_status, msg=observation)
 
     if args.update_status:
         print('Only updating active status, skipping adding new jobs')
