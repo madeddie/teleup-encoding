@@ -64,6 +64,8 @@ def parse_args(argv=None):
     Parsed from commandline options and arguments
     """
     parser = argparse.ArgumentParser()
+    parser.add_argument('--config_file',
+                        help='Give full location of config file to use')
     parser.add_argument('--update_status', action='store_true',
                         help='Only update status of running jobs')
     parser.add_argument('--dry_run', action='store_true',
@@ -230,9 +232,9 @@ def send_job(job_def):
 
 
 if __name__ == "__main__":
-    config = read_config()
-
     args = parse_args()
+
+    config = read_config(args.config_file)
 
     loglevel = getattr(logging, args.loglevel)
     if args.dry_run:
