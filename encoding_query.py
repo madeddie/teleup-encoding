@@ -97,7 +97,7 @@ def get_vod_list(status=VOD_TODO, paging=True, limit=100):
     if paging:
         while 'next' in resp_json.get('paging', {}):
             resp = sess.get(
-                urlparse.urljoin(api_endpoint, resp_json['paging']['next']),
+                urljoin(api_endpoint, resp_json['paging']['next']),
                 auth=api_auth
             )
             resp_json = resp.json()
@@ -191,6 +191,14 @@ def get_job_status(job_id):
 
     data = resp.json()['response']
 
+    if data.get('errors'):
+        logging.warning(
+            'Retrieving encoding job status failed (id: {})\n{}'.format(
+                job_id, data['errors']['error']
+            )
+        )
+        return False
+
     return_vals = ('id', 'created', 'started', 'progress', 'status',
                    'description')
     return {x: data.get(x) for x in return_vals}
@@ -244,7 +252,12 @@ if __name__ == "__main__":
 
         status = get_job_status(asset.get('encode_job_id'))
 
-        if status['status'] in JOB_ACTIVE:
+        if not status:
+            observation = 'failed to retrieve status for {}'.format(
+                asset.get('encode_job_id')
+            )
+            vod_status = VOD_FAIL
+        elif status['status'] in JOB_ACTIVE:
             observation = '{} {}%'.format(status['status'], status['progress'])
             vod_status = VOD_ACTIVE
             logging.info('{}: {}'.format(asset['id'], observation))
