@@ -233,7 +233,6 @@ def send_job(job_def):
 
 if __name__ == "__main__":
     args = parse_args()
-
     config = read_config(args.config_file)
 
     loglevel = getattr(logging, args.loglevel)
@@ -241,7 +240,14 @@ if __name__ == "__main__":
         print('Not making any actual changes, setting loglevel to DEBUG')
         loglevel = getattr(logging, 'DEBUG')
 
-    logging.basicConfig(level=loglevel)
+    log_file = os.path.join(sys.path[0], 'encoding.log')
+    logging.basicConfig(
+        format='%(asctime)s %(message)s',
+        level=loglevel,
+        filename=log_file
+    )
+    if os.isatty(sys.stdout.fileno()):
+        logging.getLogger().addHandler(logging.StreamHandler())
 
     # Check active jobs and update vod status
     active_assets = get_vod_list(status=VOD_ACTIVE)
@@ -289,7 +295,7 @@ if __name__ == "__main__":
     # Run encoding jobs for selected vod assets
     to_encode_assets = get_vod_list(status=VOD_TODO)
     if not to_encode_assets:
-        logging.info('No new assets to encode')
+        logging.debug('No new assets to encode')
     for asset in to_encode_assets:
         file_name = asset['movie_file']
         hd_content = asset.get('movie_hd', False)
