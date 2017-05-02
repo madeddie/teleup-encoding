@@ -312,3 +312,7 @@ if __name__ == "__main__":
                 logging.warning(
                     'Failure encoding asset (id: {})'.format(asset['id'])
                 )
+
+    # If we got this far, notify our healthchecks.io endpoint
+    if config.get('healthcheck_url'):
+        requests.get(config['healthcheck_url'])

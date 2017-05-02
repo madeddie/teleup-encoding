@@ -9,6 +9,8 @@ source = SOURCE_URL
 destination = DESTINATION_URL
 notify = NOTIFICATION_URL_OR_MAIL_ADDRESS
 
+healthcheck_url = HEALTHCHECK_IO_URL
+
 # New form, used for multibitrate
 sizes = {
     'sd': '0x240,0x360,0x480',
