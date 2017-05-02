@@ -70,7 +70,7 @@ def parse_args(argv=None):
                         help='Only update status of running jobs')
     parser.add_argument('--dry_run', action='store_true',
                         help="Dry run; don't make any actual changes")
-    parser.add_argument('--loglevel', default='WARNING',
+    parser.add_argument('--loglevel', default='INFO',
                         choices=['DEBUG', 'INFO', 'WARNING',
                                  'ERROR', 'CRITICAL'],
                         help='Set log level')
