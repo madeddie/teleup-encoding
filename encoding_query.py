@@ -5,20 +5,23 @@ import json
 import logging
 import os
 import sys
+from ftplib import FTP
 try:
-    from urlparse import urljoin
+    from urlparse import urlsplit, urljoin
 except ImportError:
-    from urllib.parse import urljoin
+    from urllib.parse import urlsplit, urljoin
 
 import requests
 from vod_metadata import VodPackage
 
 # TeleUP status constants
-VOD_TODO = 0     # selected to be encoded
-VOD_ACTIVE = 1   # encoding started
-VOD_SUCCESS = 5  # encoded with success (ready to rent)
-VOD_FAIL = -1    # encoding failed
-VOD_REJECT = -5  # rejected (will not be processed)
+VOD_STATUS = {
+    'TODO': 0,     # selected to be encoded
+    'ACTIVE': 1,   # encoding started
+    'SUCCESS': 5,  # encoded with success (ready to rent)
+    'FAIL': -1,    # encoding failed
+    'REJECT': -5,  # rejected (will not be processed)
+}
 
 # Encoding.com status constants
 JOB_ACTIVE = ('New', 'Downloading', 'Waiting for encoder',
@@ -68,6 +71,8 @@ def parse_args(argv=None):
                         help='Give full location of config file to use')
     parser.add_argument('--update_status', action='store_true',
                         help='Only update status of running jobs')
+    parser.add_argument('--cleanup', action='store_true',
+                        help='Delete files for encoded and/or rejected assets')
     parser.add_argument('--dry_run', action='store_true',
                         help="Dry run; don't make any actual changes")
     parser.add_argument('--loglevel', default='INFO',
@@ -78,14 +83,14 @@ def parse_args(argv=None):
     return parser.parse_args(argv)
 
 
-def get_vod_list(status=VOD_TODO, paging=True, limit=100):
+def get_vod_list(status=VOD_STATUS['TODO'], paging=True, limit=100):
     """Return list of assets from TeleUP api vod endpoint"""
     api_endpoint = config['teleup_url']
     api_auth = (config['teleup_secret'], '')
-    url = '{}?status={}&limit={}'.format(api_endpoint, status, limit)
+    payload = {'status': status, 'limit': limit}
 
     sess = requests.Session()
-    resp = sess.get(url, auth=(config['teleup_secret'], ''))
+    resp = sess.get(api_endpoint, auth=api_auth, params=payload)
     if not resp.ok:
         logging.warning(
             'Something went wrong with the TeleUP API: {}'.format(resp.text)
@@ -98,10 +103,8 @@ def get_vod_list(status=VOD_TODO, paging=True, limit=100):
 
     if paging:
         while 'next' in resp_json.get('paging', {}):
-            resp = sess.get(
-                urljoin(api_endpoint, resp_json['paging']['next']),
-                auth=api_auth
-            )
+            url = urljoin(api_endpoint, resp_json['paging']['next'])
+            resp = sess.get(url, auth=api_auth)
             resp_json = resp.json()
             output.extend(resp_json.get('data'))
 
@@ -231,6 +234,40 @@ def send_job(job_def):
         return False
 
 
+def clean_files(status, force=False):
+    """Clean up files on TeleUP server
+
+    Delete files for assets with given status; i.e. SUCCESS or REJECT
+    """
+    allowed = (VOD_STATUS['SUCCESS'], VOD_STATUS['REJECT'])
+    if status not in allowed and not force:
+        msg = (
+            'When trying to delete files for assets _not_ marked with '
+            "SUCCESS or REJECT, please use 'force=True'"
+        )
+        logging.warning(msg)
+        return False
+
+    ftp_info = urlsplit(config['source'])
+    conn = FTP(ftp_info.hostname, ftp_info.username, ftp_info.password)
+    if ftp_info.path:
+        conn.cwd(ftp_info.path.lstrip('/'))
+    ftpfiles = conn.nlst()
+
+    matching = []
+    for asset in get_vod_list(status=status):
+        asset_base = '_'.join(asset['movie_file'].split('_')[0:2])
+        matching.extend(
+            [s for s in ftpfiles if asset_base in s]
+        )
+
+    for f in matching:
+        logging.info('deleting: ' + f)
+        conn.delete(f)
+
+    conn.close()
+
+
 if __name__ == "__main__":
     args = parse_args()
     config = read_config(args.config_file)
@@ -249,8 +286,16 @@ if __name__ == "__main__":
     if os.isatty(sys.stdout.fileno()):
         logging.getLogger().addHandler(logging.StreamHandler())
 
+    # If cleaning up, only cleanup and exit
+    if args.cleanup and not args.dry_run:
+        for status in ('REJECT', 'SUCCESS'):
+            logging.info('cleaning files for assets marked: {}'.format(status))
+            clean_files(status=VOD_STATUS[status])
+
+        sys.exit()
+
     # Check active jobs and update vod status
-    active_assets = get_vod_list(status=VOD_ACTIVE)
+    active_assets = get_vod_list(status=VOD_STATUS['ACTIVE'])
     if not active_assets:
         logging.info('No active jobs')
     for asset in active_assets:
@@ -264,36 +309,36 @@ if __name__ == "__main__":
             observation = 'failed to retrieve status for {}'.format(
                 asset.get('encode_job_id')
             )
-            vod_status = VOD_FAIL
+            vod_status = VOD_STATUS['FAIL']
         elif status['status'] in JOB_ACTIVE:
             observation = '{} {}%'.format(status['status'], status['progress'])
-            vod_status = VOD_ACTIVE
+            vod_status = VOD_STATUS['ACTIVE']
             logging.info('{}: {}'.format(asset['id'], observation))
         elif status['status'] in JOB_SUCCESS:
             observation = '-'
-            vod_status = VOD_SUCCESS
+            vod_status = VOD_STATUS['SUCCESS']
             logging.info('{}: {}'.format(asset['id'], 'done'))
         elif status['status'] in JOB_FAIL:
             if status.get('description'):
                 observation = status['description']
             else:
                 observation = status['status']
-            vod_status = VOD_FAIL
+            vod_status = VOD_STATUS['FAIL']
             logging.info('{}: {}'.format(asset['id'], 'failed'))
         else:
             observation = 'Encoding status {} unknown'.format(status['status'])
-            vod_status = VOD_FAIL
+            vod_status = VOD_STATUS['FAIL']
             logging.info('{}: {}'.format(asset['id'], observation))
 
         if not args.dry_run:
             update_vod_status(asset['id'], vod_status, msg=observation)
 
     if args.update_status:
-        print('Only updating active status, skipping adding new jobs')
+        logging.info('Only updating active status, skipping adding new jobs')
         sys.exit()
 
     # Run encoding jobs for selected vod assets
-    to_encode_assets = get_vod_list(status=VOD_TODO)
+    to_encode_assets = get_vod_list(status=VOD_STATUS['TODO'])
     if not to_encode_assets:
         logging.debug('No new assets to encode')
     for asset in to_encode_assets:
@@ -307,12 +352,12 @@ if __name__ == "__main__":
             job_id = send_job(job_def)
 
             if job_id:
-                update_vod_status(asset['id'], VOD_ACTIVE, job_id)
+                update_vod_status(asset['id'], VOD_STATUS['ACTIVE'], job_id)
             else:
                 logging.warning(
                     'Failure encoding asset (id: {})'.format(asset['id'])
                 )
 
     # If we got this far, notify our healthchecks.io endpoint
-    if config.get('healthcheck_url'):
+    if not args.dry_run and config.get('healthcheck_url'):
         requests.get(config['healthcheck_url'])
